@@ -108,6 +108,13 @@ function testShopifyConnection() {
   );
 }
 function getShopifyAccessToken_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('SHOPIFY_ACCESS_TOKEN');
+
+  if (cached) {
+    return cached;
+  }
+
   const props = PropertiesService.getScriptProperties();
 
   const store = props.getProperty('SHOPIFY_STORE');
@@ -150,6 +157,12 @@ function getShopifyAccessToken_() {
     );
   }
 
+  // Reuse the token instead of requesting a new one on every API call.
+  // Cache for 50 minutes (or less if Shopify says it expires sooner).
+  const expiresIn = Number(data.expires_in) || 3600;
+  const ttl = Math.max(60, Math.min(3000, expiresIn - 300));
+  cache.put('SHOPIFY_ACCESS_TOKEN', data.access_token, ttl);
+
   return data.access_token;
 }
 
@@ -159,44 +172,207 @@ function shopifyGraphQL_(query, variables) {
   const props = PropertiesService.getScriptProperties();
   const store = props.getProperty('SHOPIFY_STORE');
 
-  const accessToken = getShopifyAccessToken_();
+  if (!store) {
+    throw new Error('SHOPIFY_STORE is missing.');
+  }
 
   const url =
     `https://${store}/admin/api/2026-10/graphql.json`;
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      'X-Shopify-Access-Token': accessToken
-    },
-    payload: JSON.stringify({
-      query: query,
-      variables: variables || {}
-    }),
-    muteHttpExceptions: true
-  });
+  const maxAttempts = 5;
 
-  const code = response.getResponseCode();
-  const body = response.getContentText();
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 
-  if (code !== 200) {
-    throw new Error(
-      `Shopify GraphQL HTTP ${code}: ${body}`
-    );
+    const accessToken = getShopifyAccessToken_();
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        'X-Shopify-Access-Token': accessToken
+      },
+      payload: JSON.stringify({
+        query: query,
+        variables: variables || {}
+      }),
+      muteHttpExceptions: true
+    });
+
+    const code = response.getResponseCode();
+    const body = response.getContentText();
+
+    // Expired / revoked token: drop the cached one and try again
+    if (code === 401 && attempt < maxAttempts) {
+      CacheService.getScriptCache().remove('SHOPIFY_ACCESS_TOKEN');
+      continue;
+    }
+
+    // Rate limited or temporary Shopify error: wait and retry
+    if ((code === 429 || code >= 500) && attempt < maxAttempts) {
+      Utilities.sleep(2000 * attempt);
+      continue;
+    }
+
+    if (code !== 200) {
+      throw new Error(
+        `Shopify GraphQL HTTP ${code}: ${body}`
+      );
+    }
+
+    const data = JSON.parse(body);
+
+    if (data.errors) {
+
+      const throttled = data.errors.some(e =>
+        e.extensions && e.extensions.code === 'THROTTLED'
+      );
+
+      if (throttled && attempt < maxAttempts) {
+        Utilities.sleep(2000 * attempt);
+        continue;
+      }
+
+      throw new Error(
+        'Shopify GraphQL error:\n' +
+        JSON.stringify(data.errors, null, 2)
+      );
+    }
+
+    // Stay ahead of the rate limit: if the bucket is nearly empty, pause
+    const cost = data.extensions && data.extensions.cost;
+
+    if (cost && cost.throttleStatus) {
+
+      const status = cost.throttleStatus;
+      const needed = cost.requestedQueryCost || 0;
+
+      if (status.currentlyAvailable < needed * 2 && status.restoreRate) {
+        const waitMs = Math.ceil(
+          (needed * 2 - status.currentlyAvailable) / status.restoreRate
+        ) * 1000;
+        Utilities.sleep(Math.min(waitMs, 10000));
+      }
+
+    }
+
+    return data.data;
   }
 
-  const data = JSON.parse(body);
-
-  if (data.errors) {
-    throw new Error(
-      'Shopify GraphQL error:\n' +
-      JSON.stringify(data.errors, null, 2)
-    );
-  }
-
-  return data.data;
+  throw new Error('Shopify GraphQL request failed after retries.');
 }
+const PRODUCT_EXPORT_VARIANT_FRAGMENT_ = `
+  fragment ExportVariantFields on ProductVariant {
+
+
+  sku
+
+  barcodes(first: 20) {
+    nodes {
+      value
+    }
+  }
+
+  price
+  compareAtPrice
+
+  inventoryPolicy
+  taxable
+
+  selectedOptions {
+    name
+    value
+  }
+
+  unitPrice {
+    amount
+  }
+
+  unitPriceMeasurement {
+    quantityUnit
+    referenceValue
+    referenceUnit
+  }
+
+  inventoryItem {
+
+    tracked
+    requiresShipping
+
+    unitCost {
+      amount
+    }
+
+    measurement {
+
+      weight {
+        value
+        unit
+      }
+
+    }
+
+  }
+
+  media(first: 1) {
+
+    nodes {
+
+      ... on MediaImage {
+
+        image {
+          url
+        }
+
+      }
+
+    }
+
+  }
+  }
+`;
+
+
+/**
+ * Products with more than 100 variants: fetch the remaining
+ * variants page by page so nothing is skipped.
+ */
+function getRemainingProductVariants_(productId, cursor) {
+
+  const query = `
+    query getMoreVariants($id: ID!, $cursor: String) {
+      product(id: $id) {
+        variants(first: 100, after: $cursor) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            ...ExportVariantFields
+          }
+        }
+      }
+    }
+  ` + PRODUCT_EXPORT_VARIANT_FRAGMENT_;
+
+  const result = [];
+
+  while (cursor) {
+
+    const data = shopifyGraphQL_(query, { id: productId, cursor: cursor });
+
+    const variants = data.product.variants;
+
+    result.push.apply(result, variants.nodes || []);
+
+    cursor = variants.pageInfo.hasNextPage
+      ? variants.pageInfo.endCursor
+      : null;
+  }
+
+  return result;
+}
+
+
 function exportShopifyProducts() {
 
   const props = PropertiesService.getScriptProperties();
@@ -367,7 +543,7 @@ function exportShopifyProducts() {
     query getProducts($cursor: String) {
 
       products(
-        first: 50,
+        first: 25,
         after: $cursor
       ) {
 
@@ -378,6 +554,7 @@ function exportShopifyProducts() {
 
         nodes {
 
+          id
           handle
           title
           descriptionHtml
@@ -418,7 +595,7 @@ function exportShopifyProducts() {
 
           }
 
-          metafields(first: 250) {
+          metafields(first: 100) {
 
             nodes {
               namespace
@@ -428,70 +605,15 @@ function exportShopifyProducts() {
 
           }
 
-          variants(first: 250) {
+          variants(first: 100) {
+
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
 
             nodes {
-
-              sku
-              barcode
-
-              price
-              compareAtPrice
-
-              inventoryPolicy
-              taxable
-
-              selectedOptions {
-                name
-                value
-              }
-
-              unitPrice {
-                amount
-              }
-
-              unitPriceMeasurement {
-                quantityUnit
-                referenceValue
-                referenceUnit
-              }
-
-              inventoryItem {
-
-                tracked
-                requiresShipping
-
-                unitCost {
-                  amount
-                }
-
-                measurement {
-
-                  weight {
-                    value
-                    unit
-                  }
-
-                }
-
-              }
-
-              media(first: 1) {
-
-                nodes {
-
-                  ... on MediaImage {
-
-                    image {
-                      url
-                    }
-
-                  }
-
-                }
-
-              }
-
+              ...ExportVariantFields
             }
 
           }
@@ -502,7 +624,7 @@ function exportShopifyProducts() {
 
     }
 
-  `;
+  ` + PRODUCT_EXPORT_VARIANT_FRAGMENT_;
 
   // =====================================================
   // PAGINATION
@@ -608,7 +730,17 @@ function exportShopifyProducts() {
       // =================================================
 
       const variants =
-        product.variants.nodes || [];
+        (product.variants.nodes || []).slice();
+
+      if (product.variants.pageInfo.hasNextPage) {
+        variants.push.apply(
+          variants,
+          getRemainingProductVariants_(
+            product.id,
+            product.variants.pageInfo.endCursor
+          )
+        );
+      }
 
       variants.forEach(variant => {
 
@@ -662,8 +794,12 @@ function exportShopifyProducts() {
           const weight =
             inventoryItem.measurement.weight;
 
-          weightUnit =
-            weight.unit || '';
+          weightUnit = {
+            GRAMS: 'g',
+            KILOGRAMS: 'kg',
+            POUNDS: 'lb',
+            OUNCES: 'oz'
+          }[weight.unit] || '';
 
           if (weight.unit === 'GRAMS') {
 
@@ -799,9 +935,11 @@ function exportShopifyProducts() {
             ? 'shopify'
             : '',
 
-          variant.inventoryPolicy || '',
+          variant.inventoryPolicy
+            ? variant.inventoryPolicy.toLowerCase()
+            : '',
 
-          '',
+          'manual',
 
           variant.price || '',
           variant.compareAtPrice || '',
@@ -819,7 +957,9 @@ function exportShopifyProducts() {
           unitPriceBase,
           unitPriceBaseUnit,
 
-          variant.barcode || '',
+          variant.barcodes && variant.barcodes.nodes
+            ? variant.barcodes.nodes.map(b => b.value).join(', ')
+            : '',
 
           images.length > 0
             ? images[0].url
@@ -1186,7 +1326,7 @@ function exportSheetToCSV_(sheetName, fileName) {
   folder.createFile(
     fileName,
     csv,
-    MimeType.PLAIN_TEXT
+    MimeType.CSV
   );
 
   Logger.log(
@@ -2089,6 +2229,10 @@ function checkNewOrdersAndEmailPicklist() {
   // LAST RUN
   // =====================================================
 
+  // Remember when this run started so orders updated while it runs
+  // are picked up next time (duplicates are prevented by the history).
+  const runStartedAt = new Date(Date.now() - 60 * 1000).toISOString();
+
   let lastRun = props.getProperty('PICKLIST_LAST_RUN');
 
   if (!lastRun) {
@@ -2123,7 +2267,7 @@ function checkNewOrdersAndEmailPicklist() {
     ) {
 
       orders(
-        first: 100,
+        first: 50,
         after: $cursor,
         query: $orderQuery,
         sortKey: UPDATED_AT,
@@ -2158,9 +2302,14 @@ function checkNewOrdersAndEmailPicklist() {
                 sku
                 title
 
-                image {
-                  url
-                  altText
+                media(first: 1) {
+                  nodes {
+                    preview {
+                      image {
+                        url
+                      }
+                    }
+                  }
                 }
 
                 product {
@@ -2168,9 +2317,12 @@ function checkNewOrdersAndEmailPicklist() {
                   id
                   title
 
-                  featuredImage {
-                    url
-                    altText
+                  featuredMedia {
+                    preview {
+                      image {
+                        url
+                      }
+                    }
                   }
 
                   metafield(
@@ -2243,7 +2395,9 @@ function checkNewOrdersAndEmailPicklist() {
       }
 
       // PREVENT DUPLICATE EXPORT
-      if (exportedOrders[order.id]) {
+      const shortOrderId = order.id.replace('gid://shopify/Order/', '');
+
+      if (exportedOrders[order.id] || exportedOrders[shortOrderId]) {
         skippedAlreadyExported++;
         return;
       }
@@ -2318,9 +2472,15 @@ function checkNewOrdersAndEmailPicklist() {
             : '';
 
         // IMAGE: variant image first, then product featured image
+        const variantMedia =
+          variant.media && variant.media.nodes && variant.media.nodes[0];
+
         const imageUrl =
-          (variant.image && variant.image.url) ||
-          (product.featuredImage && product.featuredImage.url) ||
+          (variantMedia && variantMedia.preview && variantMedia.preview.image &&
+            variantMedia.preview.image.url) ||
+          (product.featuredMedia && product.featuredMedia.preview &&
+            product.featuredMedia.preview.image &&
+            product.featuredMedia.preview.image.url) ||
           '';
 
         // SKU
@@ -2401,7 +2561,7 @@ function checkNewOrdersAndEmailPicklist() {
     Logger.log('Already exported: ' + skippedAlreadyExported);
     Logger.log('Not eligible: ' + skippedNotEligible);
 
-    props.setProperty('PICKLIST_LAST_RUN', new Date().toISOString());
+    props.setProperty('PICKLIST_LAST_RUN', runStartedAt);
 
     return;
 
@@ -2584,19 +2744,61 @@ Please find the Pick List PDF attached.`,
   // MARK ORDERS AS EXPORTED
   // =====================================================
 
+  // Store compactly (order number -> export time in ms) and forget
+  // orders older than 30 days. A Script Property value is limited to
+  // ~9 KB, so the old unbounded history eventually caused
+  // "Argument too large" errors and stopped the picklist.
+  const nowMs = Date.now();
+  const keepAfterMs = nowMs - 30 * 24 * 60 * 60 * 1000;
+
   ordersToMarkAsExported.forEach(orderId => {
-    exportedOrders[orderId] = {
-      exportedAt: new Date().toISOString()
-    };
+    exportedOrders[orderId] = nowMs;
   });
+
+  const compactHistory = {};
+
+  Object.keys(exportedOrders).forEach(orderId => {
+
+    const entry = exportedOrders[orderId];
+
+    const exportedAtMs = typeof entry === 'number'
+      ? entry
+      : Date.parse(entry && entry.exportedAt) || nowMs;
+
+    if (exportedAtMs >= keepAfterMs) {
+      compactHistory[orderId.replace('gid://shopify/Order/', '')] = exportedAtMs;
+    }
+
+  });
+
+  // Hard cap: if still too large, drop the oldest entries.
+  let historyJson = JSON.stringify(compactHistory);
+
+  if (historyJson.length > 8500) {
+
+    const newestFirst = Object.keys(compactHistory)
+      .sort((a, b) => compactHistory[b] - compactHistory[a]);
+
+    const trimmed = {};
+
+    for (const orderId of newestFirst) {
+      trimmed[orderId] = compactHistory[orderId];
+      if (JSON.stringify(trimmed).length > 8500) {
+        delete trimmed[orderId];
+        break;
+      }
+    }
+
+    historyJson = JSON.stringify(trimmed);
+  }
 
   props.setProperty(
     'PICKLIST_EXPORTED_ORDERS',
-    JSON.stringify(exportedOrders)
+    historyJson
   );
 
   // SAVE LAST RUN
-  props.setProperty('PICKLIST_LAST_RUN', new Date().toISOString());
+  props.setProperty('PICKLIST_LAST_RUN', runStartedAt);
 
   // LOG
   Logger.log('Picklist sent successfully.');
