@@ -1,113 +1,35 @@
 function testShopifyConnection() {
 
-  const props = PropertiesService.getScriptProperties();
-
-  const store = props.getProperty('SHOPIFY_STORE');
-  const clientId = props.getProperty('SHOPIFY_CLIENT_ID');
-  const clientSecret = props.getProperty('SHOPIFY_CLIENT_SECRET');
-
-  if (!store || !clientId || !clientSecret) {
-    throw new Error(
-      'Missing SHOPIFY_STORE, SHOPIFY_CLIENT_ID, or SHOPIFY_CLIENT_SECRET'
-    );
-  }
-
-  // Step 1: Get temporary Admin API access token
-  const tokenUrl =
-    `https://${store}/admin/oauth/access_token`;
-
-  const tokenResponse = UrlFetchApp.fetch(tokenUrl, {
-    method: 'post',
-    contentType: 'application/x-www-form-urlencoded',
-    payload: {
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      client_secret: clientSecret
-    },
-    muteHttpExceptions: true
-  });
-
-  const tokenCode = tokenResponse.getResponseCode();
-  const tokenBody = tokenResponse.getContentText();
-
-  Logger.log('Token HTTP Status: ' + tokenCode);
-  Logger.log(tokenBody);
-
-  if (tokenCode !== 200) {
-    throw new Error(
-      'Could not obtain Shopify access token. HTTP ' +
-      tokenCode +
-      ': ' +
-      tokenBody
-    );
-  }
-
-  const tokenData = JSON.parse(tokenBody);
-
-  if (!tokenData.access_token) {
-    throw new Error(
-      'Shopify did not return an access token: ' +
-      tokenBody
-    );
-  }
-
-  const accessToken = tokenData.access_token;
-
-  // Step 2: Use the access token to call GraphQL Admin API
-  const graphqlUrl =
-    `https://${store}/admin/api/2026-10/graphql.json`;
-
-  const query = `
+  const data = shopifyGraphQL_(`
     query {
       shop {
         name
         myshopifyDomain
       }
     }
-  `;
-
-  const response = UrlFetchApp.fetch(graphqlUrl, {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      'X-Shopify-Access-Token': accessToken
-    },
-    payload: JSON.stringify({
-      query: query
-    }),
-    muteHttpExceptions: true
-  });
-
-  const code = response.getResponseCode();
-  const body = response.getContentText();
-
-  Logger.log('GraphQL HTTP Status: ' + code);
-  Logger.log(body);
-
-  if (code !== 200) {
-    throw new Error(
-      'Shopify GraphQL request failed. HTTP ' +
-      code +
-      ': ' +
-      body
-    );
-  }
-
-  const data = JSON.parse(body);
-
-  if (data.errors) {
-    throw new Error(
-      'Shopify GraphQL error: ' +
-      JSON.stringify(data.errors, null, 2)
-    );
-  }
+  `, {});
 
   Logger.log(
     'SUCCESS! Connected to Shopify store: ' +
-    data.data.shop.name
+    data.shop.name + ' (' + data.shop.myshopifyDomain + ')'
   );
 }
+
+
 function getShopifyAccessToken_() {
+
+  // Option A: a fixed Admin API access token (shpat_...) from a custom app.
+  // If this Script Property is set, it is used directly and the
+  // client-credentials login below is skipped.
+  const fixedToken = (
+    PropertiesService.getScriptProperties().getProperty('SHOPIFY_ACCESS_TOKEN') || ''
+  ).trim();
+
+  if (fixedToken) {
+    return fixedToken;
+  }
+
+  // Option B: client-credentials login (Dev Dashboard app).
   const cache = CacheService.getScriptCache();
   const cached = cache.get('SHOPIFY_ACCESS_TOKEN');
 
@@ -117,13 +39,14 @@ function getShopifyAccessToken_() {
 
   const props = PropertiesService.getScriptProperties();
 
-  const store = props.getProperty('SHOPIFY_STORE');
-  const clientId = props.getProperty('SHOPIFY_CLIENT_ID');
-  const clientSecret = props.getProperty('SHOPIFY_CLIENT_SECRET');
+  const store = (props.getProperty('SHOPIFY_STORE') || '').trim();
+  const clientId = (props.getProperty('SHOPIFY_CLIENT_ID') || '').trim();
+  const clientSecret = (props.getProperty('SHOPIFY_CLIENT_SECRET') || '').trim();
 
   if (!store || !clientId || !clientSecret) {
     throw new Error(
-      'Missing SHOPIFY_STORE, SHOPIFY_CLIENT_ID, or SHOPIFY_CLIENT_SECRET'
+      'Missing SHOPIFY_STORE, SHOPIFY_CLIENT_ID, or SHOPIFY_CLIENT_SECRET ' +
+      '(or set SHOPIFY_ACCESS_TOKEN instead)'
     );
   }
 
@@ -144,8 +67,13 @@ function getShopifyAccessToken_() {
   const body = response.getContentText();
 
   if (code !== 200) {
+    // Shopify returns an HTML page; keep only the readable reason
+    const reason =
+      (body.match(/What happened\?<\/h3>\s*<div[^>]*>([^<]*)/) || [])[1] ||
+      body.slice(0, 300);
+
     throw new Error(
-      `Could not obtain Shopify access token. HTTP ${code}: ${body}`
+      `Could not obtain Shopify access token. HTTP ${code}: ${reason.trim()}`
     );
   }
 
@@ -170,7 +98,7 @@ function getShopifyAccessToken_() {
 function shopifyGraphQL_(query, variables) {
 
   const props = PropertiesService.getScriptProperties();
-  const store = props.getProperty('SHOPIFY_STORE');
+  const store = (props.getProperty('SHOPIFY_STORE') || '').trim();
 
   if (!store) {
     throw new Error('SHOPIFY_STORE is missing.');
