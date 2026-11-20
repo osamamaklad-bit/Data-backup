@@ -1,12 +1,14 @@
 name: Sync back from Google Apps Script
 
 # Copies edits made in the Apps Script editor back into this repo.
-# Runs every hour and can be started by hand from the Actions tab.
-# Commits made here use GITHUB_TOKEN, so they do NOT trigger the
-# deploy workflow again (no loop).
+# Runs once a day (03:23 Cairo time) and can be started by hand from
+# the Actions tab whenever you need it sooner.
+# Each run is ~30 seconds and only 2 Google API calls (token refresh +
+# download). Commits made here use GITHUB_TOKEN, so they do NOT trigger
+# the deploy workflow again (no loop).
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '23 1 * * *'
   workflow_dispatch:
 
 permissions:
@@ -19,6 +21,7 @@ concurrency:
 jobs:
   pull:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 

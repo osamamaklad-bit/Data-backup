@@ -17,7 +17,7 @@ from the **Actions** tab ("Run workflow").
 
 ## Sync back Apps Script → GitHub
 
-`.github/workflows/pull-from-apps-script.yml` runs every hour (and on demand from the
+`.github/workflows/pull-from-apps-script.yml` runs once a day at 03:23 Cairo time (and on demand from the
 **Actions** tab: "Sync back from Google Apps Script") and commits any edits made in the
 Apps Script editor back into this repo. `Secrets.gs` is never committed.
 
