@@ -15,8 +15,14 @@ Every push to `main` that changes `Code.gs` or `appsscript.json` runs
 project with [clasp](https://github.com/google/clasp). You can also run it by hand
 from the **Actions** tab ("Run workflow").
 
-GitHub is the source of truth: edits made directly in the Apps Script editor are
-overwritten on the next deploy, so make changes here.
+## Sync back Apps Script → GitHub
+
+`.github/workflows/pull-from-apps-script.yml` runs every hour (and on demand from the
+**Actions** tab: "Sync back from Google Apps Script") and commits any edits made in the
+Apps Script editor back into this repo. `Secrets.gs` is never committed.
+
+Avoid editing in both places at once: before changing code on GitHub, run the sync-back
+workflow first, otherwise the deploy overwrites editor changes that were not synced yet.
 
 ### One-time setup (all from the browser)
 
