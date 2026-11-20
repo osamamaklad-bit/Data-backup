@@ -329,6 +329,51 @@ function setTextColumns_(sheet, headers, columnNames, rowCount) {
   });
 }
 
+/**
+ * Products with more than 10 images: fetch the rest.
+ */
+function getRemainingProductMedia_(productId, cursor) {
+
+  const query = `
+    query getMoreMedia($id: ID!, $cursor: String) {
+      product(id: $id) {
+        media(first: 50, after: $cursor) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            ... on MediaImage {
+              image {
+                url
+                altText
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const result = [];
+
+  while (cursor) {
+
+    const data = shopifyGraphQL_(query, { id: productId, cursor: cursor });
+
+    const media = data.product.media;
+
+    result.push.apply(result, media.nodes || []);
+
+    cursor = media.pageInfo.hasNextPage
+      ? media.pageInfo.endCursor
+      : null;
+  }
+
+  return result;
+}
+
+
 function exportShopifyProducts() {
 
   const props = PropertiesService.getScriptProperties();
@@ -536,6 +581,11 @@ function exportShopifyProducts() {
 
           media(first: 10) {
 
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+
             nodes {
 
               ... on MediaImage {
@@ -592,6 +642,7 @@ function exportShopifyProducts() {
 
   let productCount = 0;
   let variantCount = 0;
+  let imageRowCount = 0;
 
   // =====================================================
   // GET PRODUCTS
@@ -659,9 +710,19 @@ function exportShopifyProducts() {
 
       const images = [];
 
-      (
-        product.media.nodes || []
-      ).forEach(media => {
+      const mediaNodes = (product.media.nodes || []).slice();
+
+      if (product.media.pageInfo.hasNextPage) {
+        mediaNodes.push.apply(
+          mediaNodes,
+          getRemainingProductMedia_(
+            product.id,
+            product.media.pageInfo.endCursor
+          )
+        );
+      }
+
+      mediaNodes.forEach(media => {
 
         if (
           media.image &&
@@ -698,9 +759,15 @@ function exportShopifyProducts() {
         );
       }
 
-      variants.forEach(variant => {
+      variants.forEach((variant, variantIndex) => {
 
         variantCount++;
+
+        // Image 1 goes on the first variant row only
+        const firstImage =
+          variantIndex === 0 && images.length > 0
+            ? images[0]
+            : null;
 
         // ===============================================
         // OPTION VALUES
@@ -917,17 +984,11 @@ function exportShopifyProducts() {
             ? variant.barcodes.nodes.map(b => b.value).join(', ')
             : '',
 
-          images.length > 0
-            ? images[0].url
-            : '',
+          firstImage ? firstImage.url : '',
 
-          images.length > 0
-            ? 1
-            : '',
+          firstImage ? 1 : '',
 
-          images.length > 0
-            ? images[0].alt
-            : '',
+          firstImage ? firstImage.alt : '',
 
           product.isGiftCard
             ? 'TRUE'
@@ -1015,6 +1076,27 @@ function exportShopifyProducts() {
 
       });
 
+      // =================================================
+      // EXTRA IMAGES (Shopify CSV format)
+      // Image 1 is on the first variant row; every other
+      // image gets its own row with only Handle + image
+      // columns filled in.
+      // =================================================
+
+      images.slice(1).forEach((image, index) => {
+
+        const imageRow = new Array(headers.length).fill('');
+
+        imageRow[headers.indexOf('Handle')] = product.handle || '';
+        imageRow[headers.indexOf('Image Src')] = image.url;
+        imageRow[headers.indexOf('Image Position')] = index + 2;
+        imageRow[headers.indexOf('Image Alt Text')] = image.alt;
+
+        rows.push(imageRow);
+        imageRowCount++;
+
+      });
+
     });
 
     cursor =
@@ -1081,6 +1163,10 @@ function exportShopifyProducts() {
 
   Logger.log(
     `Variants exported: ${variantCount}`
+  );
+
+  Logger.log(
+    `Extra image rows: ${imageRowCount}`
   );
 
   Logger.log(
