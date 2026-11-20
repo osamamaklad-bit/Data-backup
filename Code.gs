@@ -15,7 +15,6 @@ function testShopifyConnection() {
   );
 }
 
-
 function getShopifyAccessToken_() {
 
   // Option A: a fixed Admin API access token (shpat_...) from a custom app.
@@ -102,7 +101,6 @@ function getShopifyAccessToken_() {
 
   return data.access_token;
 }
-
 
 function shopifyGraphQL_(query, variables) {
 
@@ -200,7 +198,6 @@ function shopifyGraphQL_(query, variables) {
 const PRODUCT_EXPORT_VARIANT_FRAGMENT_ = `
   fragment ExportVariantFields on ProductVariant {
 
-
   sku
 
   barcodes(first: 20) {
@@ -268,7 +265,6 @@ const PRODUCT_EXPORT_VARIANT_FRAGMENT_ = `
   }
 `;
 
-
 /**
  * Products with more than 100 variants: fetch the remaining
  * variants page by page so nothing is skipped.
@@ -309,6 +305,29 @@ function getRemainingProductVariants_(productId, cursor) {
   return result;
 }
 
+/**
+ * Google Sheets turns text like "+2012..." or "00123" or ISO dates
+ * into numbers/dates when written. Mark these columns as plain text
+ * first so phone numbers, SKUs, barcodes and IDs are kept exactly.
+ */
+function setTextColumns_(sheet, headers, columnNames, rowCount) {
+
+  if (rowCount < 1) {
+    return;
+  }
+
+  columnNames.forEach(name => {
+
+    const index = headers.indexOf(name);
+
+    if (index !== -1) {
+      sheet
+        .getRange(2, index + 1, rowCount, 1)
+        .setNumberFormat('@');
+    }
+
+  });
+}
 
 function exportShopifyProducts() {
 
@@ -1011,6 +1030,21 @@ function exportShopifyProducts() {
 
   if (rows.length > 0) {
 
+    setTextColumns_(
+      sheet,
+      headers,
+      [
+        'Handle',
+        'Option1 Value',
+        'Option2 Value',
+        'Option3 Value',
+        'Variant SKU',
+        'Variant Barcodes',
+        'Tags'
+      ],
+      rows.length
+    );
+
     sheet
       .getRange(
         2,
@@ -1118,8 +1152,13 @@ function exportShopifyCustomers() {
           firstName
           lastName
 
-          email
-          phone
+          defaultEmailAddress {
+            emailAddress
+          }
+
+          defaultPhoneNumber {
+            phoneNumber
+          }
 
           numberOfOrders
 
@@ -1160,8 +1199,12 @@ function exportShopifyCustomers() {
         customer.id || '',
         customer.firstName || '',
         customer.lastName || '',
-        customer.email || '',
-        customer.phone || '',
+        customer.defaultEmailAddress
+          ? customer.defaultEmailAddress.emailAddress || ''
+          : '',
+        customer.defaultPhoneNumber
+          ? customer.defaultPhoneNumber.phoneNumber || ''
+          : '',
         customer.numberOfOrders || 0,
         customer.amountSpent
           ? customer.amountSpent.amount
@@ -1186,6 +1229,13 @@ function exportShopifyCustomers() {
   } while (cursor);
 
   if (rows.length > 0) {
+
+    setTextColumns_(
+      sheet,
+      headers,
+      ['Customer ID', 'Phone', 'Tags', 'Created At', 'Updated At'],
+      rows.length
+    );
 
     sheet
       .getRange(
@@ -1271,7 +1321,6 @@ function exportSheetToCSV_(sheetName, fileName) {
   );
 }
 
-
 function csvEscape_(value) {
 
   if (value === null || value === undefined) {
@@ -1294,7 +1343,6 @@ function csvEscape_(value) {
 
   return text;
 }
-
 
 function exportCSVFiles() {
 
@@ -1556,6 +1604,94 @@ function backupLiveShopifyTheme() {
     `Live theme: ${theme.name}`
   );
 }
+const INVENTORY_VARIANT_FRAGMENT_ = `
+  fragment InventoryVariantFields on ProductVariant {
+
+  sku
+
+  selectedOptions {
+
+    name
+    value
+
+  }
+
+  inventoryItem {
+
+    inventoryLevels(
+      first: 20
+    ) {
+
+      nodes {
+
+        location {
+
+          name
+
+        }
+
+        quantities(
+          names: [
+            "incoming"
+            "damaged"
+            "quality_control"
+            "reserved"
+            "safety_stock"
+            "committed"
+            "available"
+            "on_hand"
+          ]
+        ) {
+
+          name
+          quantity
+
+        }
+
+      }
+
+    }
+
+  }
+  }
+`;
+
+function getRemainingInventoryVariants_(productId, cursor) {
+
+  const query = `
+    query getMoreInventoryVariants($id: ID!, $cursor: String) {
+      product(id: $id) {
+        variants(first: 25, after: $cursor) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            ...InventoryVariantFields
+          }
+        }
+      }
+    }
+  ` + INVENTORY_VARIANT_FRAGMENT_;
+
+  const result = [];
+
+  while (cursor) {
+
+    const data = shopifyGraphQL_(query, { id: productId, cursor: cursor });
+
+    const variants = data.product.variants;
+
+    result.push.apply(result, variants.nodes || []);
+
+    cursor = variants.pageInfo.hasNextPage
+      ? variants.pageInfo.endCursor
+      : null;
+  }
+
+  return result;
+}
+
 function exportShopifyInventory() {
 
   const props = PropertiesService.getScriptProperties();
@@ -1584,7 +1720,6 @@ function exportShopifyInventory() {
 
   // Clear previous export
   sheet.clearContents();
-
 
   // =====================================================
   // HEADERS
@@ -1627,7 +1762,6 @@ function exportShopifyInventory() {
 
   ];
 
-
   sheet
     .getRange(
       1,
@@ -1636,7 +1770,6 @@ function exportShopifyInventory() {
       headers.length
     )
     .setValues([headers]);
-
 
   // =====================================================
   // QUERY
@@ -1677,59 +1810,19 @@ function exportShopifyInventory() {
 
           }
 
+          id
+
           variants(
             first: 25
           ) {
 
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+
             nodes {
-
-              sku
-
-              selectedOptions {
-
-                name
-                value
-
-              }
-
-              inventoryItem {
-
-                inventoryLevels(
-                  first: 20
-                ) {
-
-                  nodes {
-
-                    location {
-
-                      name
-
-                    }
-
-                    quantities(
-                      names: [
-                        "incoming"
-                        "damaged"
-                        "quality_control"
-                        "reserved"
-                        "safety_stock"
-                        "committed"
-                        "available"
-                        "on_hand"
-                      ]
-                    ) {
-
-                      name
-                      quantity
-
-                    }
-
-                  }
-
-                }
-
-              }
-
+              ...InventoryVariantFields
             }
 
           }
@@ -1740,8 +1833,7 @@ function exportShopifyInventory() {
 
     }
 
-  `;
-
+  ` + INVENTORY_VARIANT_FRAGMENT_;
 
   // =====================================================
   // PAGINATION
@@ -1757,7 +1849,6 @@ function exportShopifyInventory() {
 
   let locationCount = 0;
 
-
   // =====================================================
   // PROCESS PRODUCTS
   // =====================================================
@@ -1772,10 +1863,8 @@ function exportShopifyInventory() {
         }
       );
 
-
     const products =
       data.products;
-
 
     // ===================================================
     // PRODUCTS
@@ -1785,7 +1874,6 @@ function exportShopifyInventory() {
 
       productCount++;
 
-
       // =================================================
       // OPTIONS
       // =================================================
@@ -1793,37 +1881,41 @@ function exportShopifyInventory() {
       const options =
         product.options || [];
 
-
       const option1Name =
         options[0]
           ? options[0].name
           : '';
-
 
       const option2Name =
         options[1]
           ? options[1].name
           : '';
 
-
       const option3Name =
         options[2]
           ? options[2].name
           : '';
-
 
       // =================================================
       // VARIANTS
       // =================================================
 
       const variants =
-        product.variants.nodes || [];
+        (product.variants.nodes || []).slice();
 
+      if (product.variants.pageInfo.hasNextPage) {
+        variants.push.apply(
+          variants,
+          getRemainingInventoryVariants_(
+            product.id,
+            product.variants.pageInfo.endCursor
+          )
+        );
+      }
 
       variants.forEach(variant => {
 
         variantCount++;
-
 
         // ===============================================
         // OPTION VALUES
@@ -1834,7 +1926,6 @@ function exportShopifyInventory() {
         let option2Value = '';
 
         let option3Value = '';
-
 
         (
           variant.selectedOptions || []
@@ -1849,7 +1940,6 @@ function exportShopifyInventory() {
 
           }
 
-
           if (
             option.name === option2Name
           ) {
@@ -1858,7 +1948,6 @@ function exportShopifyInventory() {
               option.value;
 
           }
-
 
           if (
             option.name === option3Name
@@ -1870,7 +1959,6 @@ function exportShopifyInventory() {
           }
 
         });
-
 
         // ===============================================
         // INVENTORY LEVELS
@@ -1885,7 +1973,6 @@ function exportShopifyInventory() {
             ? variant.inventoryItem.inventoryLevels.nodes
 
             : [];
-
 
         // ===============================================
         // NO INVENTORY LOCATION
@@ -1935,7 +2022,6 @@ function exportShopifyInventory() {
 
         }
 
-
         // ===============================================
         // LOCATIONS
         // ===============================================
@@ -1944,13 +2030,11 @@ function exportShopifyInventory() {
 
           locationCount++;
 
-
           // =============================================
           // QUANTITIES
           // =============================================
 
           const quantities = {};
-
 
           (
             level.quantities || []
@@ -1963,7 +2047,6 @@ function exportShopifyInventory() {
 
           });
 
-
           // =============================================
           // VALUES
           // =============================================
@@ -1973,31 +2056,26 @@ function exportShopifyInventory() {
               ? quantities.incoming
               : 0;
 
-
           const unavailable =
             (quantities.damaged || 0) +
             (quantities.quality_control || 0) +
             (quantities.reserved || 0) +
             (quantities.safety_stock || 0);
 
-
           const committed =
             quantities.committed !== undefined
               ? quantities.committed
               : 0;
-
 
           const available =
             quantities.available !== undefined
               ? quantities.available
               : 0;
 
-
           const onHand =
             quantities.on_hand !== undefined
               ? quantities.on_hand
               : 0;
-
 
           // =============================================
           // LOCATION
@@ -2008,7 +2086,6 @@ function exportShopifyInventory() {
             level.location
               ? level.location.name || ''
               : '';
-
 
           // =============================================
           // ROW
@@ -2059,7 +2136,6 @@ function exportShopifyInventory() {
 
     });
 
-
     // ===================================================
     // NEXT PAGE
     // ===================================================
@@ -2072,15 +2148,20 @@ function exportShopifyInventory() {
 
         : null;
 
-
   } while (cursor);
-
 
   // =====================================================
   // WRITE RESULTS
   // =====================================================
 
   if (rows.length > 0) {
+
+    setTextColumns_(
+      sheet,
+      headers,
+      ['Handle', 'Option1 Value', 'Option2 Value', 'Option3 Value', 'SKU'],
+      rows.length
+    );
 
     sheet
       .getRange(
@@ -2093,19 +2174,16 @@ function exportShopifyInventory() {
 
   }
 
-
   // =====================================================
   // FORMAT
   // =====================================================
 
   sheet.setFrozenRows(1);
 
-
   sheet.autoResizeColumns(
     1,
     headers.length
   );
-
 
   // =====================================================
   // LOG
@@ -2144,697 +2222,36 @@ function exportShopifyInventory() {
   );
 
 }
-function checkNewOrdersAndEmailPicklist() {
+
+/**
+ * ONE-TIME CLEANUP for the removed Picklist feature.
+ * Run once from the editor: deletes the old 10-minute picklist trigger
+ * (otherwise it keeps failing with "Script function not found") and
+ * the PICKLIST_* Script Properties. Safe to run more than once.
+ */
+function removeOldPicklistSetup() {
+
+  let removed = 0;
+
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+
+    const handler = trigger.getHandlerFunction();
+
+    if (
+      handler === 'scheduledPicklistCheck' ||
+      handler === 'checkNewOrdersAndEmailPicklist'
+    ) {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+
+  });
 
   const props = PropertiesService.getScriptProperties();
 
-  const spreadsheetId = props.getProperty('SPREADSHEET_ID');
-
-  if (!spreadsheetId) {
-    throw new Error('SPREADSHEET_ID is missing.');
-  }
-
-  const ss = SpreadsheetApp.openById(spreadsheetId);
-
-  let sheet = ss.getSheetByName('Picklist');
-
-  if (!sheet) {
-    sheet = ss.insertSheet('Picklist');
-  }
-
-  // =====================================================
-  // LAST RUN
-  // =====================================================
-
-  // Remember when this run started so orders updated while it runs
-  // are picked up next time (duplicates are prevented by the history).
-  const runStartedAt = new Date(Date.now() - 60 * 1000).toISOString();
-
-  let lastRun = props.getProperty('PICKLIST_LAST_RUN');
-
-  if (!lastRun) {
-    lastRun = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-  }
-
-  // =====================================================
-  // EXPORTED ORDER HISTORY
-  // =====================================================
-
-  let exportedOrders = {};
-
-  const exportedOrdersJson = props.getProperty('PICKLIST_EXPORTED_ORDERS');
-
-  if (exportedOrdersJson) {
-    try {
-      exportedOrders = JSON.parse(exportedOrdersJson);
-    } catch (error) {
-      exportedOrders = {};
-    }
-  }
-
-  // =====================================================
-  // SHOPIFY QUERY
-  // =====================================================
-
-  const query = `
-
-    query getUpdatedOrders(
-      $cursor: String,
-      $orderQuery: String
-    ) {
-
-      orders(
-        first: 50,
-        after: $cursor,
-        query: $orderQuery,
-        sortKey: UPDATED_AT,
-        reverse: false
-      ) {
-
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-
-        nodes {
-
-          id
-          name
-          cancelledAt
-          displayFulfillmentStatus
-          displayFinancialStatus
-          tags
-
-          lineItems(first: 100) {
-
-            nodes {
-
-              quantity
-              title
-              variantTitle
-
-              variant {
-
-                id
-                sku
-                title
-
-                media(first: 1) {
-                  nodes {
-                    preview {
-                      image {
-                        url
-                      }
-                    }
-                  }
-                }
-
-                product {
-
-                  id
-                  title
-
-                  featuredMedia {
-                    preview {
-                      image {
-                        url
-                      }
-                    }
-                  }
-
-                  metafield(
-                    namespace: "custom",
-                    key: "bin_location"
-                  ) {
-                    value
-                  }
-
-                }
-
-                metafield(
-                  namespace: "custom",
-                  key: "bin_location"
-                ) {
-                  value
-                }
-
-              }
-
-            }
-
-          }
-
-        }
-
-      }
-
-    }
-
-  `;
-
-  // =====================================================
-  // SEARCH UPDATED ORDERS
-  // =====================================================
-
-  const orderQuery = `updated_at:>${lastRun}`;
-
-  let cursor = null;
-
-  const productsMap = {};
-
-  let eligibleOrderCount = 0;
-  let skippedAlreadyExported = 0;
-  let skippedNotEligible = 0;
-
-  const ordersToMarkAsExported = [];
-
-  // =====================================================
-  // GET ORDERS
-  // =====================================================
-
-  do {
-
-    const data = shopifyGraphQL_(
-      query,
-      {
-        cursor: cursor,
-        orderQuery: orderQuery
-      }
-    );
-
-    const orders = data.orders;
-
-    orders.nodes.forEach(order => {
-
-      // IGNORE CANCELLED ORDERS
-      if (order.cancelledAt) {
-        return;
-      }
-
-      // PREVENT DUPLICATE EXPORT
-      const shortOrderId = order.id.replace('gid://shopify/Order/', '');
-
-      if (exportedOrders[order.id] || exportedOrders[shortOrderId]) {
-        skippedAlreadyExported++;
-        return;
-      }
-
-      // FULFILLMENT STATUS
-      const fulfillmentStatus = order.displayFulfillmentStatus || '';
-
-      if (fulfillmentStatus !== 'UNFULFILLED') {
-        skippedNotEligible++;
-        return;
-      }
-
-      // TAGS
-      const tags = (order.tags || []).map(tag =>
-        tag.toString().trim().toLowerCase()
-      );
-
-      const hasConfirmedTag = tags.includes('confirmed');
-      const hasNotConfirmedTag = tags.includes('not confirmed yet');
-
-      // FINANCIAL STATUS
-      const financialStatus = order.displayFinancialStatus || '';
-      const isPaid = financialStatus === 'PAID';
-
-      // ELIGIBILITY RULE
-      // 1) UNFULFILLED + confirmed AND NOT "not confirmed yet"
-      // OR
-      // 2) UNFULFILLED + PAID regardless of tags
-      const confirmedOrder = hasConfirmedTag && !hasNotConfirmedTag;
-      const paidOrder = isPaid;
-      const eligible = confirmedOrder || paidOrder;
-
-      if (!eligible) {
-        skippedNotEligible++;
-        return;
-      }
-
-      // THIS ORDER IS ELIGIBLE
-      eligibleOrderCount++;
-
-      const orderNumber = order.name || '';
-
-      ordersToMarkAsExported.push(order.id);
-
-      // LINE ITEMS
-      (order.lineItems.nodes || []).forEach(lineItem => {
-
-        const variant = lineItem.variant;
-
-        if (!variant) {
-          return;
-        }
-
-        const product = variant.product || {};
-
-        // PRODUCT TITLE
-        const productTitle =
-          lineItem.title ||
-          product.title ||
-          variant.title ||
-          'Unknown Product';
-
-        // VARIANT NAME (hide "Default Title")
-        const rawVariantName =
-          lineItem.variantTitle ||
-          variant.title ||
-          '';
-
-        const variantName =
-          rawVariantName && rawVariantName !== 'Default Title'
-            ? rawVariantName
-            : '';
-
-        // IMAGE: variant image first, then product featured image
-        const variantMedia =
-          variant.media && variant.media.nodes && variant.media.nodes[0];
-
-        const imageUrl =
-          (variantMedia && variantMedia.preview && variantMedia.preview.image &&
-            variantMedia.preview.image.url) ||
-          (product.featuredMedia && product.featuredMedia.preview &&
-            product.featuredMedia.preview.image &&
-            product.featuredMedia.preview.image.url) ||
-          '';
-
-        // SKU
-        const sku = variant.sku || '';
-
-        // PRODUCT BIN
-        const productMetafield = product.metafield || null;
-        const productBin = productMetafield ? productMetafield.value || '' : '';
-
-        // VARIANT BIN
-        const variantMetafield = variant.metafield || null;
-        const variantBin = variantMetafield ? variantMetafield.value || '' : '';
-
-        // QUANTITY
-        const quantity = Number(lineItem.quantity) || 0;
-
-        // UNIQUE VARIANT
-        const productKey = variant.id;
-
-        if (!productsMap[productKey]) {
-
-          productsMap[productKey] = {
-            imageUrl: imageUrl,
-            title: productTitle,
-            variantName: variantName,
-            sku: sku,
-            quantity: quantity,
-            productBin: productBin,
-            variantBin: variantBin,
-            orders: [orderNumber]
-          };
-
-        } else {
-
-          const entry = productsMap[productKey];
-
-          entry.quantity += quantity;
-
-          if (!entry.orders.includes(orderNumber)) {
-            entry.orders.push(orderNumber);
-          }
-
-          if (!entry.imageUrl && imageUrl) {
-            entry.imageUrl = imageUrl;
-          }
-
-          if (!entry.productBin && productBin) {
-            entry.productBin = productBin;
-          }
-
-          if (!entry.variantBin && variantBin) {
-            entry.variantBin = variantBin;
-          }
-
-          if (!entry.variantName && variantName) {
-            entry.variantName = variantName;
-          }
-
-        }
-
-      });
-
-    });
-
-    cursor = orders.pageInfo.hasNextPage
-      ? orders.pageInfo.endCursor
-      : null;
-
-  } while (cursor);
-
-  // =====================================================
-  // NO ELIGIBLE ORDERS
-  // =====================================================
-
-  if (eligibleOrderCount === 0) {
-
-    Logger.log('No eligible new orders found.');
-    Logger.log('Already exported: ' + skippedAlreadyExported);
-    Logger.log('Not eligible: ' + skippedNotEligible);
-
-    props.setProperty('PICKLIST_LAST_RUN', runStartedAt);
-
-    return;
-
-  }
-
-  // =====================================================
-  // CLEAR OLD PICKLIST
-  // =====================================================
-
-  sheet.clear();
-
-  // TITLE
-  sheet.getRange(1, 1, 1, 7).merge();
-  sheet.getRange('A1').setValue('PetFriend Pick List');
-  sheet.getRange('A1')
-    .setFontSize(18)
-    .setFontWeight('bold')
-    .setHorizontalAlignment('center');
-
-  // GENERATED TIME
-  sheet.getRange(2, 1, 1, 7).merge();
-  sheet.getRange('A2').setValue(
-    'Generated: ' +
-    Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      'yyyy-MM-dd HH:mm:ss'
-    )
-  );
-  sheet.getRange('A2').setHorizontalAlignment('center');
-
-  // HEADERS
-  const headers = [
-    'Image',
-    'Product Title',
-    'SKU',
-    'Quantity',
-    'Bin Location',
-    'Variant Bin Location',
-    'Order Numbers'
-  ];
-
-  sheet.getRange(4, 1, 1, headers.length).setValues([headers]);
-
-  sheet.getRange(4, 1, 1, headers.length)
-    .setFontWeight('bold')
-    .setHorizontalAlignment('center');
-
-  // SORT BY BIN
-  const products = Object.values(productsMap);
-
-  products.sort((a, b) => {
-
-    const binA = (a.variantBin || a.productBin || '').toString();
-    const binB = (b.variantBin || b.productBin || '').toString();
-
-    return binA.localeCompare(
-      binB,
-      undefined,
-      { numeric: true, sensitivity: 'base' }
-    );
-
-  });
-
-  // WRITE BASIC DATA
-  const rows = products.map(product => [
-
-    '',
-
-    product.variantName
-      ? product.title + ' - ' + product.variantName
-      : product.title,
-
-    product.sku,
-    product.quantity,
-    product.productBin,
-    product.variantBin,
-    product.orders.join(', ')
-
-  ]);
-
-  if (rows.length > 0) {
-    sheet.getRange(5, 1, rows.length, headers.length).setValues(rows);
-  }
-
-  // INSERT IMAGES
-  products.forEach((product, index) => {
-
-    if (!product.imageUrl) {
-      return;
-    }
-
-    try {
-
-      const altText = product.variantName
-        ? product.title + ' - ' + product.variantName
-        : product.title;
-
-      const image = SpreadsheetApp
-        .newCellImage()
-        .setSourceUrl(product.imageUrl)
-        .setAltTextDescription(altText)
-        .setAltTextTitle(altText)
-        .build();
-
-      sheet.getRange(index + 5, 1).setValue(image);
-
-    } catch (error) {
-
-      Logger.log(
-        'Could not insert image for ' +
-        product.title +
-        ': ' +
-        error.message
-      );
-
-    }
-
-  });
-
-  // ROW HEIGHT
-  if (rows.length > 0) {
-    sheet.setRowHeights(5, rows.length, 85);
-  }
-
-  // COLUMN WIDTHS
-  sheet.setColumnWidth(1, 90);
-  sheet.setColumnWidth(2, 300);
-  sheet.setColumnWidth(3, 150);
-  sheet.setColumnWidth(4, 80);
-  sheet.setColumnWidth(5, 150);
-  sheet.setColumnWidth(6, 180);
-  sheet.setColumnWidth(7, 250);
-
-  // FORMATTING
-  sheet.setFrozenRows(4);
-
-  const tableRange = sheet.getRange(4, 1, rows.length + 1, headers.length);
-
-  tableRange.setBorder(true, true, true, true, true, true);
-  tableRange.setVerticalAlignment('middle');
-  tableRange.setWrap(true);
-
-  // =====================================================
-  // CREATE PDF
-  // =====================================================
-
-  SpreadsheetApp.flush();
-
-  const pdfBlob = createPicklistPdf_(
-    ss.getId(),
-    sheet.getSheetId()
-  );
-
-  // =====================================================
-  // SEND EMAIL
-  // =====================================================
-
-  MailApp.sendEmail({
-
-    to: 'osamamaklad@gmail.com,kamaldweek0@gmail.com,samirvet84@gmail.com',
-
-    subject: `PetFriend Pick List - ${eligibleOrderCount} New Order(s)`,
-
-    body:
-      `PetFriend Pick List
-
-Eligible orders: ${eligibleOrderCount}
-Products: ${products.length}
-
-Generated automatically from Shopify.
-
-Please find the Pick List PDF attached.`,
-
-    attachments: [pdfBlob]
-
-  });
-
-  // =====================================================
-  // MARK ORDERS AS EXPORTED
-  // =====================================================
-
-  // Store compactly (order number -> export time in ms) and forget
-  // orders older than 30 days. A Script Property value is limited to
-  // ~9 KB, so the old unbounded history eventually caused
-  // "Argument too large" errors and stopped the picklist.
-  const nowMs = Date.now();
-  const keepAfterMs = nowMs - 30 * 24 * 60 * 60 * 1000;
-
-  ordersToMarkAsExported.forEach(orderId => {
-    exportedOrders[orderId] = nowMs;
-  });
-
-  const compactHistory = {};
-
-  Object.keys(exportedOrders).forEach(orderId => {
-
-    const entry = exportedOrders[orderId];
-
-    const exportedAtMs = typeof entry === 'number'
-      ? entry
-      : Date.parse(entry && entry.exportedAt) || nowMs;
-
-    if (exportedAtMs >= keepAfterMs) {
-      compactHistory[orderId.replace('gid://shopify/Order/', '')] = exportedAtMs;
-    }
-
-  });
-
-  // Hard cap: if still too large, drop the oldest entries.
-  let historyJson = JSON.stringify(compactHistory);
-
-  if (historyJson.length > 8500) {
-
-    const newestFirst = Object.keys(compactHistory)
-      .sort((a, b) => compactHistory[b] - compactHistory[a]);
-
-    const trimmed = {};
-
-    for (const orderId of newestFirst) {
-      trimmed[orderId] = compactHistory[orderId];
-      if (JSON.stringify(trimmed).length > 8500) {
-        delete trimmed[orderId];
-        break;
-      }
-    }
-
-    historyJson = JSON.stringify(trimmed);
-  }
-
-  props.setProperty(
-    'PICKLIST_EXPORTED_ORDERS',
-    historyJson
-  );
-
-  // SAVE LAST RUN
-  props.setProperty('PICKLIST_LAST_RUN', runStartedAt);
-
-  // LOG
-  Logger.log('Picklist sent successfully.');
-  Logger.log('Eligible orders: ' + eligibleOrderCount);
-  Logger.log('Products: ' + products.length);
-  Logger.log('Already exported: ' + skippedAlreadyExported);
-  Logger.log('Not eligible: ' + skippedNotEligible);
-
-}
-
-
-// =====================================================
-// CREATE PICKLIST PDF
-// =====================================================
-
-function createPicklistPdf_(spreadsheetId, sheetId) {
-
-  const url =
-    'https://docs.google.com/spreadsheets/d/' +
-    spreadsheetId +
-    '/export?' +
-    'format=pdf' +
-    '&gid=' + sheetId +
-    '&size=A4' +
-    '&portrait=true' +
-    '&fitw=true' +
-    '&sheetnames=false' +
-    '&printtitle=false' +
-    '&pagenumbers=true' +
-    '&gridlines=false' +
-    '&fzr=true';
-
-  const token = ScriptApp.getOAuthToken();
-
-  const response = UrlFetchApp.fetch(
-    url,
-    {
-      headers: {
-        Authorization: 'Bearer ' + token
-      }
-    }
-  );
-
-  if (response.getResponseCode() !== 200) {
-    throw new Error(
-      'Could not create Picklist PDF. HTTP ' +
-      response.getResponseCode()
-    );
-  }
-
-  return response
-    .getBlob()
-    .setName('PetFriend Pick List.pdf');
-
-}
-
-
-function createPicklistTrigger() {
-
-  ScriptApp.getProjectTriggers().forEach(t => {
-
-    if (
-      t.getHandlerFunction() === 'scheduledPicklistCheck' ||
-      t.getHandlerFunction() === 'checkNewOrdersAndEmailPicklist'
-    ) {
-      ScriptApp.deleteTrigger(t);
-    }
-
-  });
-
-  ScriptApp.newTrigger('scheduledPicklistCheck')
-    .timeBased()
-    .everyMinutes(10)
-    .create();
-
-}
-
-
-// ISO day: Monday = 1 ... Friday = 5 ... Sunday = 7
-function scheduledPicklistCheck() {
-
-  const now = new Date();
-  const tz = Session.getScriptTimeZone();
-
-  const day = Number(Utilities.formatDate(now, tz, 'u'));
-  const hour = Number(Utilities.formatDate(now, tz, 'H'));
-
-  // Friday: disabled
-  if (day === 5) {
-    Logger.log('Friday - Picklist is disabled.');
-    return;
-  }
-
-  // Working window: 10:00 AM to before 2:00 PM
-  if (hour < 10 || hour >= 14) {
-    Logger.log('Outside Picklist working hours.');
-    return;
-  }
-
-  checkNewOrdersAndEmailPicklist();
-
+  props.deleteProperty('PICKLIST_LAST_RUN');
+  props.deleteProperty('PICKLIST_EXPORTED_ORDERS');
+
+  Logger.log(`Picklist triggers removed: ${removed}`);
+  Logger.log('PICKLIST_* properties removed.');
 }

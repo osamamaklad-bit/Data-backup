@@ -2,7 +2,7 @@
 
 Source of the Apps Script project `13oa6DgQzXe3rcPifGim1jWEvDcNHIEZ6pL_ZNni2W_52HRlA9dVwsCaq`.
 
-- `Code.gs` – all functions (products / customers / inventory export, CSV export, theme backup, picklist email)
+- `Code.gs` – all functions (products / customers / inventory export, CSV export, theme backup)
 - `appsscript.json` – project manifest
 
 Required Script Properties: `SHOPIFY_STORE`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`,
