@@ -18,20 +18,26 @@ from the **Actions** tab ("Run workflow").
 GitHub is the source of truth: edits made directly in the Apps Script editor are
 overwritten on the next deploy, so make changes here.
 
-### One-time setup
+### One-time setup (all from the browser)
 
 1. Turn on the Apps Script API: https://script.google.com/home/usersettings
-2. On your computer (needs Node.js), log in with the Google account that owns the script:
+2. Create the `CLASPRC_JSON` secret (lets GitHub upload to Apps Script):
+   - On the repo page click **Code → Codespaces → Create codespace on this branch**.
+   - In the terminal at the bottom run:
+     ```bash
+     npx @google/clasp@2.4.2 login --no-localhost
+     ```
+     Open the link it prints, allow access with the Google account that owns the script,
+     and paste the code back into the terminal.
+   - Run `cat ~/.clasprc.json` and copy everything it prints.
+   - Repo **Settings → Secrets and variables → Actions → New repository secret**:
+     name `CLASPRC_JSON`, value = what you copied.
+   - Delete the codespace afterwards (github.com/codespaces).
+3. Create the `SHOPIFY_CLIENT_SECRET` secret: in https://dev.shopify.com open the app,
+   **Settings → Credentials**, click the copy button next to *Client secret*, and save it as
+   a new repository secret named `SHOPIFY_CLIENT_SECRET`.
+4. **Actions → Deploy to Google Apps Script → Run workflow.**
 
-   ```bash
-   npx @google/clasp@2.4.2 login
-   ```
-
-3. Copy the contents of the file it creates, `~/.clasprc.json`
-   (Windows: `C:\Users\<you>\.clasprc.json`).
-4. In GitHub: repo → Settings → Secrets and variables → Actions → New repository secret
-   - Name: `CLASPRC_JSON`
-   - Value: the file contents
-5. Merge this branch into `main` (or run the workflow manually).
-
-`.claspignore` makes sure only `Code.gs` and `appsscript.json` are uploaded.
+The Shopify secret is written into a generated `Secrets.gs` in the Apps Script project at
+deploy time; it is never committed to GitHub. To change it later, update the GitHub secret and
+run the workflow again.

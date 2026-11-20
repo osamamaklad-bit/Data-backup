@@ -25,7 +25,9 @@ function getShopifyAccessToken_() {
     PropertiesService.getScriptProperties().getProperty('SHOPIFY_ACCESS_TOKEN') || ''
   ).trim();
 
-  if (fixedToken) {
+  // Only real Admin API tokens start with shpat_ (ignore anything else,
+  // e.g. a client secret saved here by mistake).
+  if (fixedToken.indexOf('shpat_') === 0) {
     return fixedToken;
   }
 
@@ -41,7 +43,14 @@ function getShopifyAccessToken_() {
 
   const store = (props.getProperty('SHOPIFY_STORE') || '').trim();
   const clientId = (props.getProperty('SHOPIFY_CLIENT_ID') || '').trim();
-  const clientSecret = (props.getProperty('SHOPIFY_CLIENT_SECRET') || '').trim();
+  // A secret delivered by the GitHub deploy (Secrets.gs, generated from the
+  // repository secret SHOPIFY_CLIENT_SECRET) takes priority over the
+  // Script Property, so the secret can be updated from GitHub.
+  const clientSecret = (
+    (typeof DEPLOY_SHOPIFY_CLIENT_SECRET !== 'undefined' && DEPLOY_SHOPIFY_CLIENT_SECRET) ||
+    props.getProperty('SHOPIFY_CLIENT_SECRET') ||
+    ''
+  ).trim();
 
   if (!store || !clientId || !clientSecret) {
     throw new Error(
