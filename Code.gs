@@ -42,24 +42,7 @@ function getShopifyAccessToken_() {
 
   const store = (props.getProperty('SHOPIFY_STORE') || '').trim();
   const clientId = (props.getProperty('SHOPIFY_CLIENT_ID') || '').trim();
-  // A secret delivered by the GitHub deploy (Secrets.gs, generated from the
-  // repository secret SHOPIFY_CLIENT_SECRET) takes priority over the
-  // Script Property, so the secret can be updated from GitHub.
-  const fileSecret = (
-    (typeof DEPLOY_SHOPIFY_CLIENT_SECRET !== 'undefined' && DEPLOY_SHOPIFY_CLIENT_SECRET) || ''
-  ).trim();
-
-  // Back up a secret found in Secrets.gs into the Script Property, so the
-  // script keeps working even if Secrets.gs is ever emptied.
-  if (fileSecret && fileSecret !== (props.getProperty('SHOPIFY_CLIENT_SECRET') || '').trim()) {
-    props.setProperty('SHOPIFY_CLIENT_SECRET', fileSecret);
-  }
-
-  const clientSecret = (
-    fileSecret ||
-    props.getProperty('SHOPIFY_CLIENT_SECRET') ||
-    ''
-  ).trim();
+  const clientSecret = (props.getProperty('SHOPIFY_CLIENT_SECRET') || '').trim();
 
   if (!store || !clientId || !clientSecret) {
     throw new Error(

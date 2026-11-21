@@ -19,7 +19,7 @@ from the **Actions** tab ("Run workflow").
 
 `.github/workflows/pull-from-apps-script.yml` runs once a day at 03:23 Cairo time (and on demand from the
 **Actions** tab: "Sync back from Google Apps Script") and commits any edits made in the
-Apps Script editor back into this repo. `Secrets.gs` is never committed.
+Apps Script editor back into this repo.
 
 Avoid editing in both places at once: before changing code on GitHub, run the sync-back
 workflow first, otherwise the deploy overwrites editor changes that were not synced yet.
@@ -39,11 +39,8 @@ workflow first, otherwise the deploy overwrites editor changes that were not syn
    - Repo **Settings → Secrets and variables → Actions → New repository secret**:
      name `CLASPRC_JSON`, value = what you copied.
    - Delete the codespace afterwards (github.com/codespaces).
-3. Create the `SHOPIFY_CLIENT_SECRET` secret: in https://dev.shopify.com open the app,
-   **Settings → Credentials**, click the copy button next to *Client secret*, and save it as
-   a new repository secret named `SHOPIFY_CLIENT_SECRET`.
+3. In the Apps Script project, under **Project Settings → Script Properties**, set
+   `SHOPIFY_STORE`, `SHOPIFY_CLIENT_ID` and `SHOPIFY_CLIENT_SECRET` (copy the secret from
+   https://dev.shopify.com → the app → **Settings → Credentials**). Deploys never touch
+   Script Properties.
 4. **Actions → Deploy to Google Apps Script → Run workflow.**
-
-The Shopify secret is written into a generated `Secrets.gs` in the Apps Script project at
-deploy time; it is never committed to GitHub. To change it later, update the GitHub secret and
-run the workflow again.

@@ -45,7 +45,7 @@ jobs:
       - name: Pull from Apps Script
         run: |
           clasp pull
-          # Secrets.gs holds the Shopify secret: never commit it
+          # Never commit a secrets file if one is ever added in the editor
           rm -f Secrets.gs Secrets.js
 
       - name: Check syntax
